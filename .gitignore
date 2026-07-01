@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+
+linkedin_profiles.xlsx
+*.xlsx
+
+linkedin_pdfs/
+*.pdf
+
+.env
+
+selenium_profile/
+linkedin_profile/
+
+.vscode/
+.idea/
