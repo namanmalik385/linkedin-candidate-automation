@@ -3,14 +3,14 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.keys import Keys
 from concurrent.futures import ThreadPoolExecutor
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+from dotenv import load_dotenv
 import pdfplumber as pdf
 import pandas as pd
 import os
 import re
 import time
 import requests
+import fitz
 
 
 
@@ -20,7 +20,14 @@ DOWNLOAD_DIR = r"C:\linkedin_pdfs"
 
 PROFILE_PATH = r"C:\selenium\linkedin_profile" 
 
-SERPAPI_KEY = "9e97c377af0fee0a0cef6cc0ccff9d25e051379ccd3ed7162c3de7b7a6669f7c"
+load_dotenv()
+
+SERPAPI_KEY = os.getenv("SERPAPI_KEY")
+
+if not SERPAPI_KEY:
+    raise ValueError(
+        "SERPAPI_KEY environment variable not found."
+    )
 
 EMAIL_REGEX = r'\b[A-Za-z0-9._%+-]+@(?!example|test|domain)[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'
 
@@ -126,6 +133,7 @@ def login(driver):
 #---Search_Keywords_&_Get_Profiles---#
 
 def search_people(driver, keywords):
+    print("\n=== Candidate Search Started ===")
     time.sleep(5)
     search_box = driver.find_element( 
         By.CSS_SELECTOR,
@@ -135,6 +143,8 @@ def search_people(driver, keywords):
     search_box.clear()
     search_box.send_keys(keywords)
     search_box.send_keys(Keys.ENTER)
+
+    print("\nSearching LinkedIn profiles...")
 
     time.sleep(5)
 
@@ -156,6 +166,7 @@ def search_people(driver, keywords):
                 if href not in seen:
                     seen.add(href)
                     profile_urls.append(href)
+                    print(f"\nCandidate found: {href}")
         except:
             continue
     return profile_urls
@@ -167,7 +178,6 @@ def search_people(driver, keywords):
 #---Open_Profile---#
 
 def open_profile(driver, profile_url):
-    print(f"opening: {profile_url}")
     return driver.get(profile_url)
 
 
@@ -259,6 +269,8 @@ def extract_skills(driver, profile_url):
 #---Download_Profile_CV---#
 
 def download_cv(driver):
+        
+        print("Downloading CV...")
 
         time.sleep(5)
 
@@ -278,6 +290,7 @@ def download_cv(driver):
 #---Parse_Downloaded_CV---#
 
 def parse_pdf(pdf):
+    print("Parsing CV...")
     pdfs = [
         os.path.join(DOWNLOAD_DIR, f)
         for f in os.listdir(DOWNLOAD_DIR)
@@ -298,12 +311,12 @@ def parse_pdf(pdf):
             if page_text:
                 text += page_text + "\n"
 
-    return text
+    return text, latest_pdf
 
 
 #---Extract_Email_&_Phone_From_Parsed_CV---#
 
-def extract_cv_contacts(text):
+def extract_cv_contacts(text, name):
 
     email_match = re.search(
         r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
@@ -314,19 +327,13 @@ def extract_cv_contacts(text):
         r"(?:\+?91[\s-]?)?[6-9]\d{9}",
         text
     )
-    print("\nSearching for email and phone inside CV text...")
 
     cv_email = email_match.group(0) if email_match else None
     cv_phone = phone_match.group(0) if phone_match else None
 
-    if cv_email:
-        print("Email: ", cv_email)
-    if not cv_email:
-        print("Email not found in CV")
-    if cv_phone:
-        print("Contact Number: ", cv_phone)
-    if not cv_phone:
-        print("Contact number not found in CV")
+    print(f"Name: {name}")
+    print(f"Email: {cv_email if cv_email else 'Not found'}")
+    print(f"Phone: {cv_phone if cv_phone else 'Not found'}")
     return cv_email, cv_phone
 
 
@@ -516,7 +523,7 @@ def queries(Name, search_anchor, final_companies, college):
 def run_serp(pdf_text, q):
 
     use_serp = True
-    print("Performing search for missing candidate data, this might take some time")
+    print("Contact details incomplete. Searching web...")
     #---GetResponses---#
     responses = []
 
@@ -554,6 +561,9 @@ def run_serp(pdf_text, q):
         if is_valid_email(e)
     }
 
+    if emails_found:
+        print(f"Email(s) found: {', '.join(emails_found)}")
+
     #---ExtractPhone---#
     raw_phones = re.findall(PHONE_REGEX, combined_text)
 
@@ -567,6 +577,7 @@ def run_serp(pdf_text, q):
 
         if len(digits) == 10:
             phones_found.add(digits)
+            print(f"Phone found: {p}")
 
     print("found ", len(emails_found), " emails and ", len(phones_found), " phone numbers")
 
@@ -720,6 +731,210 @@ def pick_best_phone(phones, name=None, text=""):
     return sorted_phones[0] if sorted_phones else None 
 
 
+#==================== GENERATE NEW CV ====================#
+
+
+SIDEBAR_COLOR = (
+    0.1607999950647354,
+    0.24310000240802765,
+    0.28630000352859497
+)
+
+def generate_pdf(name, pdf_path, email, phone):
+
+    print("Generating updated CV...")
+
+    doc = fitz.open(pdf_path)
+    page = doc[0]
+
+    sidebar_spans = []
+
+    existing_emails = set()
+    existing_phones = set()
+
+    linkedin_y = None
+    linkedin_size = None
+
+    for block in page.get_text("dict")["blocks"]:
+
+        if "lines" not in block:
+            continue
+
+        for line in block["lines"]:
+
+            for span in line["spans"]:
+
+                text = span["text"].strip()
+
+                if not text:
+                    continue
+
+                x0, y0, x1, y1 = span["bbox"]
+
+                if x0 > 202:
+                    continue
+
+                existing_emails.update(
+                    e.lower().strip()
+                    for e in re.findall(EMAIL_REGEX, text)
+                )
+
+                existing_phones.update(
+                    re.sub(r"\D", "", p)
+                    for p in re.findall(PHONE_REGEX, text)
+                )
+
+                sidebar_spans.append({
+                    "text": text,
+                    "x": x0,
+                    "y": y0,
+                    "size": span["size"],
+                    "color": span["color"]
+                })
+
+                if (
+                    linkedin_y is None
+                    and "linkedin.com" in text.lower()
+                ):
+                    linkedin_y = y0
+                    linkedin_size = span["size"]
+
+    if linkedin_y is None:
+        print("LinkedIn URL not found")
+        doc.close()
+        return None
+
+    email_to_insert = None
+    phone_to_insert = None
+
+    if email:
+
+        normalized_email = email.lower().strip()
+
+        if normalized_email not in existing_emails:
+            email_to_insert = email
+            print(f"Email added: {email}")
+
+    if phone:
+
+        normalized_phone = re.sub(r"\D", "", phone)
+
+        if normalized_phone not in existing_phones:
+            phone_to_insert = phone
+            print(f"Phone added: {phone}")
+
+    line_height = linkedin_size * 1.35
+
+    extra_lines = 0
+
+    if email_to_insert:
+        extra_lines += 1
+
+    if phone_to_insert:
+        extra_lines += 1
+
+    extra_space = line_height * extra_lines
+
+    sidebar_rect = fitz.Rect(
+        0,
+        0,
+        202,
+        page.rect.height
+    )
+
+    page.add_redact_annot(
+        sidebar_rect,
+        fill=SIDEBAR_COLOR
+    )
+
+    page.apply_redactions()
+
+    linkedin_replaced = False
+
+    for span in sidebar_spans:
+
+        text = span["text"]
+
+        x = span["x"]
+        y = span["y"]
+
+        if y > linkedin_y:
+            y += extra_space
+
+        size = span["size"]
+
+        color_int = span["color"]
+
+        r = ((color_int >> 16) & 255) / 255
+        g = ((color_int >> 8) & 255) / 255
+        b = (color_int & 255) / 255
+
+        color = (r, g, b)
+
+        if (
+            not linkedin_replaced
+            and "linkedin.com" in text.lower()
+        ):
+
+            current_y = y
+
+            if email_to_insert:
+
+                page.insert_text(
+                    (x, current_y),
+                    email_to_insert,
+                    fontsize=size,
+                    color=color
+                )
+
+                current_y += line_height
+
+            if phone_to_insert:
+
+                page.insert_text(
+                    (x, current_y),
+                    phone_to_insert,
+                    fontsize=size,
+                    color=color
+                )
+
+                current_y += line_height
+
+            page.insert_text(
+                (x, current_y),
+                text,
+                fontsize=size,
+                color=color
+            )
+
+            linkedin_replaced = True
+            continue
+
+        page.insert_text(
+            (x, y),
+            text,
+            fontsize=size,
+            color=color
+        )
+
+    safe_name = re.sub(
+        r"[^A-Za-z0-9]",
+        "_",
+        name
+    )
+
+    output_pdf = f"{safe_name}_updated_cv.pdf"
+
+    if os.path.exists(output_pdf):
+        os.remove(output_pdf)
+
+    doc.save(output_pdf)
+    doc.close()
+
+    print(f"Updated CV saved: {output_pdf}")
+
+    return os.path.abspath(output_pdf)
+
 #==================== PROFILE PROCESSING =====================#
 
 
@@ -733,11 +948,11 @@ def process_profile(driver, profile_url):
     
     clean = extract_skills(driver=driver, profile_url=profile_url)    
     
-    text = parse_pdf(pdf=pdf)
+    text, latest_pdf = parse_pdf(pdf=pdf)
     if not text:
         text = ""
 
-    cv_email, cv_phone = extract_cv_contacts(text=text)
+    cv_email, cv_phone = extract_cv_contacts(text=text, name=Name)
     
     college = extract_college(text=text, blacklist=blacklist)
      
@@ -759,9 +974,13 @@ def process_profile(driver, profile_url):
     else:
         best_email, best_phone = None, None
 
-    result = candidate_data(Name, clean, cv_email, best_email, cv_phone, best_phone, profile_url)
+    profile_data, final_email, final_phone = candidate_data(Name, clean, cv_email, best_email, cv_phone, best_phone, profile_url)
 
-    return result
+    generate_pdf(name=Name, pdf_path=latest_pdf, email=final_email, phone=final_phone)
+    
+    return profile_data
+
+
 
 def candidate_data(Name, clean, cv_email, best_email, cv_phone, best_phone, profile_url):
     final_email = cv_email or best_email
@@ -775,7 +994,7 @@ def candidate_data(Name, clean, cv_email, best_email, cv_phone, best_phone, prof
         "LinkedIn ID": profile_url
     }
 
-    return profile_data
+    return profile_data, final_email, final_phone
     
 
 
@@ -785,7 +1004,7 @@ driver.get("https://www.linkedin.com/feed/")
 
 login(driver)
 
-keywords = input("Enter skills: ")
+keywords = input("Enter Skillset: ")
 
 profile_urls = search_people(driver, keywords)
 
