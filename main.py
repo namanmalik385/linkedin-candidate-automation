@@ -2,7 +2,10 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from concurrent.futures import ThreadPoolExecutor
+from selenium.common.exceptions import TimeoutException
 from dotenv import load_dotenv
 import pdfplumber as pdf
 import pandas as pd
@@ -134,10 +137,10 @@ def login(driver):
 
 def search_people(driver, keywords):
     print("\n=== Candidate Search Started ===")
-    time.sleep(5)
-    search_box = driver.find_element( 
-        By.CSS_SELECTOR,
-        'input[placeholder="Search"]'
+    search_box = WebDriverWait(driver, 20).until(
+        EC.element_to_be_clickable(
+            (By.CSS_SELECTOR, 'input[placeholder="Search"]')
+        )
     )
 
     search_box.clear()
@@ -146,14 +149,28 @@ def search_people(driver, keywords):
 
     print("\nSearching LinkedIn profiles...")
 
-    time.sleep(5)
+    
+    people = WebDriverWait(driver, 20).until(
+        EC.element_to_be_clickable(
+            (By.XPATH, "//*[normalize-space()='People']")
+        )
+    )
 
-    people = driver.find_element(By.XPATH, "//a[normalize-space()='People']")
     people.click()
 
-    time.sleep(5)
+    WebDriverWait(driver, 20).until(
+        lambda d: len(
+            d.find_elements(
+                By.CSS_SELECTOR,
+                'a[href*="/in/"]'
+            )
+        ) > 0
+    )
 
-    profiles = driver.find_elements(By.CSS_SELECTOR, 'a[href*="/in/"]')
+    profiles = driver.find_elements(
+        By.CSS_SELECTOR,
+        'a[href*="/in/"]'
+    )
 
     profile_urls = []
     seen = set()
@@ -166,7 +183,6 @@ def search_people(driver, keywords):
                 if href not in seen:
                     seen.add(href)
                     profile_urls.append(href)
-                    print(f"\nCandidate found: {href}")
         except:
             continue
     return profile_urls
@@ -184,50 +200,67 @@ def open_profile(driver, profile_url):
 #---Get_Profile_Name---#
 
 def extract_name(driver):
-    try:
-        time.sleep(5)
-        h2s = driver.find_elements(By.TAG_NAME, "h2")
-        Name = h2s[1].text.strip() if len(h2s)>1 else "Unknown"
-        print("Candidate Name: ", Name)
-        return Name
-    except:
-        return "Unknown"
+    
+    WebDriverWait(driver, 20).until(
+        lambda d: len(d.find_elements(By.TAG_NAME, "h2")) > 1
+    )
+    h2s = driver.find_elements(By.TAG_NAME, "h2")
+    if len(h2s) > 1:
+        Name = h2s[1].text.strip()
+    print("Candidate Name: ", Name)
+    return Name
 
+#---Download_Profile_CV---#
+
+def download_cv(driver):
+        
+    print("Downloading CV...")
+
+    WebDriverWait(driver, 20).until(
+        lambda d: len(
+            d.find_elements(
+                By.CSS_SELECTOR,
+                'button[aria-label="More"]'
+            )
+        ) > 1
+    )
+
+    more_btn = driver.find_elements(
+            By.CSS_SELECTOR,
+            'button[aria-label="More"]'
+        )[1]
+    
+    more_btn.click()
+
+    save_pdf = WebDriverWait(driver, 20).until(
+        EC.element_to_be_clickable(
+            (
+                By.XPATH,
+                "//*[@role='menuitem'][contains(., 'Save to PDF')]"
+            )
+        )
+    )
+
+    save_pdf.click()
 
 #---Extract_Profile_Skills---#
 
 def extract_skills(driver, profile_url):
 
-    time.sleep(5)
-
     skills_url = profile_url.rstrip("/") + "/details/skills/"
-
-    driver.get(skills_url)
-
-    time.sleep(5)
-
-    #click Tools & Technologies button
-    tools_tabs = driver.find_elements(
-        By.XPATH,
-        "//*[contains(text(),'Tools & Technologies')]"
-    )
-
-    if tools_tabs:
-        driver.execute_script(
-            "arguments[0].click();",
-            tools_tabs[0]
-        )
-    else:
-        print("No Tools & Technologies section")
-
-    time.sleep(3)
 
     #Count skill elements
     clean = []
 
     seen_skills = set()
 
-    container = driver.find_element(By.TAG_NAME, "main")
+    driver.get(skills_url)
+
+    container = WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located(
+            (By.TAG_NAME, "main")
+        )
+    )
 
     def get_skill_count(driver):
         return len(driver.find_elements(
@@ -237,18 +270,27 @@ def extract_skills(driver, profile_url):
         
     #Scroll page to load content
     prev_count = 0
+    stable_rounds = 0
 
-    while True:
-        driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight;", container)
-        time.sleep(1.5)
+    while stable_rounds < 2:
+
+        driver.execute_script(
+            "arguments[0].scrollTop = arguments[0].scrollHeight;",
+            container
+        )
+
+        time.sleep(1)
+
         curr_count = get_skill_count(driver)
+
         if curr_count == prev_count:
-            break
+            stable_rounds += 1
+        else:
+            stable_rounds = 0
+
         prev_count = curr_count
-
-    time.sleep(5)
-
     #Extract skills from 'Skills' section
+
     skills = driver.find_elements(
         By.XPATH,
         "//div[starts-with(@componentkey,'com.linkedin.sdui.profile.skill')]//span"
@@ -264,28 +306,6 @@ def extract_skills(driver, profile_url):
 
     print("Candidate Skills: ", clean)
     return clean
-
-
-#---Download_Profile_CV---#
-
-def download_cv(driver):
-        
-        print("Downloading CV...")
-
-        time.sleep(5)
-
-        more_btn = driver.find_elements(By.CSS_SELECTOR, 'button[aria-label="More"]')[1]
-        more_btn.click()
-
-        time.sleep(2)
-
-        driver.find_element(
-            By.XPATH,
-            "//*[@role='menuitem'][contains(., 'Save to PDF')]"
-        ).click()
-
-        print("\nDownloaded CV")
-
 
 #---Parse_Downloaded_CV---#
 
@@ -426,21 +446,6 @@ def extract_companies(text, company_blacklist, role_keywords):
        
     return final_companies
 
-#---Select_Anchor(College/Companies)_For_Advanced_Search_Queries---#
-def build_anchor(Name, final_companies=None, college=None):
-
-    if final_companies:
-        primary_anchor = final_companies[0]
-        source = "company"
-    elif college:
-        primary_anchor = college
-        source = "college"
-    else:
-        primary_anchor = Name
-        source = "name"
-
-    return primary_anchor
-
 
 #==================== ADVANCED SEARCH PIPELINE =====================#
 
@@ -466,7 +471,7 @@ def google_search(query):
         return r.json()  
 
     except:
-        return {"organic_results": []}
+        return ""
 
 #---Get_Search_Result_Page_Text---#
 def fetch_page_text(url):
@@ -493,24 +498,18 @@ def clean_scraped_text(text):
     return re.sub(r'\s+', ' ', text)
 
 #---Search_Queries---#
-def queries(Name, search_anchor, final_companies, college):
+def queries(Name, final_companies, college):
 
     queries = [
-        f'"{Name}" "{search_anchor}" email',
-        f'"{Name}" "{search_anchor}" contact',
-        f'"{search_anchor}" "@gmail.com" OR "@outlook.com"',
-        f'"{search_anchor}" "+91" phone OR mobile',
-        f'site:linkedin.com/in "{Name}"'
+        f'"{Name}" email',
+        f'"{Name}" gmail',
+        f'"{Name}" contact',
     ]
 
     if final_companies:
         for c in final_companies[:2]:
+            queries.append(f'"{Name}" "{c}"')
             queries.append(f'"{Name}" "{c}" email')
-            queries.append(f'"{c}" contact email')
-        queries.append(f'"{search_anchor}" "{final_companies[0]}" email')
-
-    if search_anchor:
-        queries.append(f'"{Name}" "{search_anchor}" email')
 
     if college:
         queries.append(f'"{Name}" "{college}" email')
@@ -522,8 +521,10 @@ def queries(Name, search_anchor, final_companies, college):
 
 def run_serp(pdf_text, q):
 
-    use_serp = True
     print("Contact details incomplete. Searching web...")
+
+    for query in q:
+        print("QUERY:", query)
     #---GetResponses---#
     responses = []
 
@@ -543,6 +544,7 @@ def run_serp(pdf_text, q):
     
     for data in responses:
         for r in data.get("organic_results", []):
+            print("Search Title:", r.get("title"))
             serp_text += " " + r.get("title", "")
             serp_text += " " + r.get("snippet", "")
 
@@ -560,6 +562,10 @@ def run_serp(pdf_text, q):
         for e in re.findall(EMAIL_REGEX, combined_text)
         if is_valid_email(e)
     }
+
+    print("EMAIL CANDIDATES:")
+    for email in emails_found:
+        print("   ", email)
 
     if emails_found:
         print(f"Email(s) found: {', '.join(emails_found)}")
@@ -665,7 +671,7 @@ def pick_best_email(emails, name=None):
         s += len(set(name_norm) & set(local_norm)) * 0.5
 
         if "gmail" not in email:
-            s += 3
+            s -= 3
 
         if email.startswith(("info@", "contact@", "hr@", "support@", "hello@")):
             s -= 2
@@ -957,15 +963,11 @@ def process_profile(driver, profile_url):
     college = extract_college(text=text, blacklist=blacklist)
      
     final_companies = extract_companies(text=text, company_blacklist=company_blacklist, role_keywords=role_keywords)
-    
-    search_anchor = build_anchor(Name=Name, final_companies=final_companies, college=college)
 
     use_serp = (cv_email is None or cv_phone is None)
-                
-    result = None
 
     if use_serp:
-        q = queries(Name=Name, search_anchor=search_anchor, final_companies=final_companies, college=college)
+        q = queries(Name=Name, final_companies=final_companies, college=college)
         search_results = run_serp(pdf_text=text, q=q)
         emails_raw = search_results["emails"]
         phones_raw = search_results["phones"]
@@ -977,6 +979,14 @@ def process_profile(driver, profile_url):
     profile_data, final_email, final_phone = candidate_data(Name, clean, cv_email, best_email, cv_phone, best_phone, profile_url)
 
     generate_pdf(name=Name, pdf_path=latest_pdf, email=final_email, phone=final_phone)
+
+
+    # Delete original downloaded PDF
+    try:
+        os.remove(latest_pdf)
+        print(f"[CLEANUP] Deleted: {latest_pdf}")
+    except Exception as e:
+        print(f"[CLEANUP] Failed to delete {latest_pdf}: {e}")
     
     return profile_data
 
